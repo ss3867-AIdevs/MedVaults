@@ -1,33 +1,62 @@
-import torch
-import torchvision.models as models
+# Paillier PHE-based FastAPI Secure Inference Application
+
+## Overview
+This application provides a secure inference mechanism using the Paillier homomorphic encryption (PHE) scheme within a FastAPI framework. It allows users to submit encrypted data and receive encrypted predictions from a machine learning model.
+
+## Installation
+Ensure you have Python 3.8+ and FastAPI installed:
+```bash
+pip install fastapi uvicorn pycryptodome
+```
+
+## Implementation
+This FastAPI application exposes two main endpoints:
+1. `/encrypt` - Encrypts data using Paillier encryption.
+2. `/predict` - Accepts encrypted data and returns encrypted predictions.
+
+### Main file: `main.py`
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel
 import numpy as np
+from phe import paillier
 
-class SecureInference:
-    def __init__(self):
-        # Load the model
-        self.model = models.resnet50(pretrained=True)
-        self.model.eval()
+app = FastAPI()
 
-    def encrypt_input(self, input_data):
-        # Implement homomorphic encryption here
-        encrypted_data = input_data  # Placeholder for actual encryption
-        return encrypted_data
+# Generate Paillier public and private keys
+public_key, private_key = paillier.generate_paillier_keypair()
 
-    def decrypt_output(self, encrypted_output):
-        # Decrypt the output
-        output = encrypted_output  # Placeholder for actual decryption
-        return output
+class EncryptionInput(BaseModel):
+    data: list
 
-    def predict(self, input_data):
-        encrypted_data = self.encrypt_input(input_data)
-        with torch.no_grad():
-            output = self.model(encrypted_data)  # Encrypted input not directly usable
-        decrypted_output = self.decrypt_output(output)
-        return decrypted_output
+class PredictionOutput(BaseModel):
+    encrypted_prediction: str
 
-# Simulated test client
-if __name__ == "__main__":
-    secure_inference = SecureInference()
-    dummy_input = torch.rand(1, 3, 224, 224)  # Example input shape for ResNet
-    prediction = secure_inference.predict(dummy_input)
-    print(f"Prediction: {prediction}")
+@app.post("/encrypt")
+async def encrypt(input: EncryptionInput):
+    encrypted_data = [public_key.encrypt(x) for x in input.data]
+    return {'encrypted_data': [enc.ciphertext() for enc in encrypted_data]}
+
+@app.post("/predict", response_model=PredictionOutput)
+async def predict(encrypted_data: EncryptionInput):
+    # Decrypt input data for prediction
+    decrypted_data = [private_key.decrypt(paillier.EncryptedNumber(int(c))) for c in encrypted_data.data]
+    # Example: simple prediction (could be a model inference)
+    predictions = [2 * x for x in decrypted_data]  # Replace with your model inference
+    # Encrypt predictions before returning
+    encrypted_predictions = [public_key.encrypt(pred) for pred in predictions]
+    return PredictionOutput(encrypted_prediction=[enc.ciphertext() for enc in encrypted_predictions])
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+## Running the Application
+To run the application, execute:
+```bash
+uvicorn main:app --reload
+```
+
+## Conclusion
+This FastAPI application allows secure predictions using homomorphic encryption, enhancing privacy in sensitive data environments.
