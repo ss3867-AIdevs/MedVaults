@@ -1,62 +1,71 @@
-# Paillier PHE-based FastAPI Secure Inference Application
+# PHE-based FastAPI Secure Inference Application
 
-## Overview
-This application provides a secure inference mechanism using the Paillier homomorphic encryption (PHE) scheme within a FastAPI framework. It allows users to submit encrypted data and receive encrypted predictions from a machine learning model.
-
-## Installation
-Ensure you have Python 3.8+ and FastAPI installed:
-```bash
-pip install fastapi uvicorn pycryptodome
-```
-
-## Implementation
-This FastAPI application exposes two main endpoints:
-1. `/encrypt` - Encrypts data using Paillier encryption.
-2. `/predict` - Accepts encrypted data and returns encrypted predictions.
-
-### Main file: `main.py`
-```python
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from sklearn.linear_model import LogisticRegression
+import pandas as pd
 import numpy as np
+import json
+import pickle
 from phe import paillier
 
 app = FastAPI()
 
-# Generate Paillier public and private keys
-public_key, private_key = paillier.generate_paillier_keypair()
+# Global model and keypair
+model = None
+public_key = None
+private_key = None
 
-class EncryptionInput(BaseModel):
-    data: list
+# Startup event to load dataset and train the model
+@app.on_event('startup')
+def load_model():
+    global model, public_key, private_key
+    # Load Wisconsin Breast Cancer dataset
+    url = 'https://raw.githubusercontent.com/jbrownlee/Datasets/master/breast-cancer-wisconsin.data'
+    df = pd.read_csv(url, header=None)
+    X = df.iloc[:, 2:30].values
+    y = df.iloc[:, 1].values
 
-class PredictionOutput(BaseModel):
-    encrypted_prediction: str
+    # Train Logistic Regression model
+    model = LogisticRegression()
+    model.fit(X, y)
 
-@app.post("/encrypt")
-async def encrypt(input: EncryptionInput):
-    encrypted_data = [public_key.encrypt(x) for x in input.data]
-    return {'encrypted_data': [enc.ciphertext() for enc in encrypted_data]}
+    # Generate Paillier keypair for encryption
+    public_key, private_key = paillier.new_keypair()
 
-@app.post("/predict", response_model=PredictionOutput)
-async def predict(encrypted_data: EncryptionInput):
-    # Decrypt input data for prediction
-    decrypted_data = [private_key.decrypt(paillier.EncryptedNumber(int(c))) for c in encrypted_data.data]
-    # Example: simple prediction (could be a model inference)
-    predictions = [2 * x for x in decrypted_data]  # Replace with your model inference
-    # Encrypt predictions before returning
-    encrypted_predictions = [public_key.encrypt(pred) for pred in predictions]
-    return PredictionOutput(encrypted_prediction=[enc.ciphertext() for enc in encrypted_predictions])
+# Request model input data class
+class PredictionRequest(BaseModel):
+    features: list
 
+# POST /predict endpoint
+@app.post('/predict')
+def predict(request: PredictionRequest):
+    global model, public_key
+    if not model:
+        raise HTTPException(status_code=503, detail='Model not loaded')
+    
+    # Encrypt features using Paillier public key
+    encrypted_features = [public_key.encrypt(feature) for feature in request.features]
+
+    # Perform homomorphic computation (dot product + bias)
+    dot_product = sum(encrypted_features[i] * model.coef_[0][i] for i in range(len(encrypted_features)))
+    bias = public_key.encrypt(model.intercept_[0])
+    encrypted_prediction = dot_product + bias  # Encrypted result
+
+    return {'prediction': str(encrypted_prediction)}
+
+# Test client simulation function
 if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-```
+    # Client-side simulation: generate keypair, encrypt features, send request, and decrypt response
+    feature_sample = [5.0, 1.7, 1.3, 0.2]  # Sample patient features
+    encrypted_sample = [public_key.encrypt(x) for x in feature_sample]
+    response = {'prediction': str(encrypted_sample)}  # Simulate server response
+    # Simulated decryption of response
+    decrypted_prediction = private_key.decrypt(response['prediction'])
+    print(f'Decrypted prediction: {decrypted_prediction}')
 
-## Running the Application
-To run the application, execute:
-```bash
-uvicorn main:app --reload
-```
-
-## Conclusion
-This FastAPI application allows secure predictions using homomorphic encryption, enhancing privacy in sensitive data environments.
+# Note on Paillier properties: 
+# 1. Additive Homomorphism: Given n1 and n2 encrypted by Paillier, n1 + n2 is also
+#    an encryption of (x1 + x2) where x1 and x2 are the plaintexts.
+# 2. Encryption does not reveal the original data, allowing secure computation on it.
+# 3. The dot product calculates in the encrypted domain, ensuring privacy throughout computation.
